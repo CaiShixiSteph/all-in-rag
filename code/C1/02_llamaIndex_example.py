@@ -21,8 +21,7 @@ Settings.llm = OpenAILike(
     model="deepseek-chat",
     api_key=os.getenv("DEEPSEEK_API_KEY"),
     api_base="https://api.deepseek.com",
-    is_chat_model=True,
-    temperature=1.5
+    is_chat_model=True
 )
 #可以手动设置切块的参数
 # Settings.text_splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=200)

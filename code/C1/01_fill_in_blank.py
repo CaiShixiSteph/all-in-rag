@@ -41,7 +41,7 @@ vectorstore.add_documents(chunks)        # 把块翻译成向量并上架
 
 # ---------- 第4步：检索 ----------
 question = "文中举了哪些例子？"
-retrieved_docs = vectorstore.similarity_search(question, k=3)        # 检索与问题最像的 3 块，结果存进 retrieved_docs
+retrieved_docs = vectorstore.similarity_search(question, k=3)       # 检索与问题最像的 3 块，结果存进 retrieved_docs
 docs_content = "\n\n".join(doc.page_content for doc in retrieved_docs)       # 把 3 块原文拼成一个字符串，存进 docs_content
                  # （提示：for doc in ... 取 doc.page_content，用 "\n\n".join 拼接）
 
@@ -50,11 +50,12 @@ docs_content = "\n\n".join(doc.page_content for doc in retrieved_docs)       # �
 #   ① 三条规则：只根据上下文回答 / 完全基于上下文 / 没有信息就说"抱歉，我无法根据提供的上下文找到相关信息来回答此问题。"
 #   ② 两个空位 {context} 和 {question}
 #   ③ 结尾是"回答:"（留白让模型续写）
-prompt = ChatPromptTemplate.from_template("""请你根据下面的上下文信息回答问题，并确保你的回答完全基于下面的上下文信息
-如果上下文中没有足够的信息去回答问题，请直接告知：“抱歉，我无法根据上下文信息找到相关信息来源。”
-上下文:{context}
-问题: {question}
-                                          回答""")
+prompt = ChatPromptTemplate.from_template("""请你根据下面的上下文信息来回答问题，并确保你的回答完全基于上下文信息。
+如果上下文中没有足够的信息来回答问题，请直接表达：“抱歉，我无法根据提供的上下文信息来回答问题。”
+question: {question}
+context: {context}
+回答:"""                                         
+                                          )
 
 llm = ChatOpenAI(
     model="deepseek-chat",
