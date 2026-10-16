@@ -23,3 +23,7 @@ for i, element in enumerate(elements, 1):
     print(f"Element {i} ({element.category}):")
     print(element)
     print("=" * 60)
+
+# 只保留正文类元素，扔掉页眉页脚等垃圾
+useful = [e for e in elements if e.category in ("Title", "NarrativeText", "ListItem")]
+print(f"清洗后: {len(useful)} 个元素, {sum(len(str(e)) for e in useful)} 字符")

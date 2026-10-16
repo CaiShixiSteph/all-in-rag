@@ -1,3 +1,6 @@
+import os
+os.environ['HF_HUB_OFFLINE'] = '1'          # 模型已在本地缓存，禁止联网检查
+os.environ['TRANSFORMERS_OFFLINE'] = '1'    # transformers 也走离线
 from langchain_experimental.text_splitter import SemanticChunker
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.document_loaders import TextLoader
@@ -11,7 +14,7 @@ embeddings = HuggingFaceEmbeddings(
 # 初始化 SemanticChunker
 text_splitter = SemanticChunker(
     embeddings,
-    breakpoint_threshold_type="percentile" # 也可以是 "standard_deviation", "interquartile", "gradient"
+    breakpoint_threshold_type="gradient" # 也可以是 "standard_deviation", "interquartile", "gradient"
 )
 
 loader = TextLoader("../../data/C2/txt/蜂医.txt", encoding="utf-8")
