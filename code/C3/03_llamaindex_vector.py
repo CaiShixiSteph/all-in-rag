@@ -1,3 +1,6 @@
+import os
+os.environ['HF_HUB_OFFLINE'] = '1'          # 模型已在本地缓存，禁止联网检查
+os.environ['TRANSFORMERS_OFFLINE'] = '1'    # transformers 也走离线
 from llama_index.core import VectorStoreIndex, Document, Settings
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 

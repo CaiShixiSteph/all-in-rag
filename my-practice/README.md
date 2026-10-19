@@ -220,3 +220,119 @@ gradient：切出2块，找差异突增的坡度，最敏感
 #### 4.3 ChunkViz
 - 网页版分块可视化工具：输入文档+分块配置，用彩色块展示每块的边界和重叠，用来直观理解分块逻辑
 
+
+## 2026-10-19 C3
+
+### 第一节 向量嵌入
+
+**一、基础概念**
+- Embedding：把真实世界的高维数据（文本/图像/音频）变成低维、稠密的数值向量。
+  每个词/段落/图片在多维空间里有一个"坐标"，这个坐标就是向量，它嵌入了原始数据的关键信息
+- 三要素：数据对象 + Embedding模型 + 输出向量（固定长度一维数组，通常几百到几千维）
+- 语义空间核心原则：语义相似 → 向量距离近；语义不相关 → 距离远
+- 三种度量：余弦相似度（最常用，越接近1越相似）、点积（向量归一化后等价于余弦）、欧氏距离（越小越相似）。C2语义分块找断点算的"余弦距离"就是这里的余弦相似度
+
+**二、Embedding在RAG中的作用**
+- 离线建索引：文档切块 → 每块转向量 → 存向量库
+- 在线检索：用户问题用同一个模型转向量 → 与所有块向量算相似度 → 召回Top-K送LLM
+- 关键：问题和文档必须用同一个模型嵌入（C1笔记"同一个翻译员才能比"就是这个原理）
+- 质量决定一切：差模型召回错内容 → 污染上下文 → 答案差（垃圾进垃圾出在检索环节的体现）
+
+**三、训练原理**
+- MLM 掩码语言模型：随机盖住15%的词让模型猜，模型被迫学习词与上下文的关系
+- NSP下一句预测：判断B是不是A的下一句，后来发现任务太简单甚至有害，RoBERTa/SBERT移除了它
+- 度量学习：直接以"相似度"为优化目标，拉近正例对、推远负例对
+- 对比学习：三元组 (Anchor, Positive, Negative)，拉近锚点与正例、推远锚点与负例
+
+**四、选型指南**
+- 起点：MTEB排行榜（Hugging Face维护的文本嵌入评测基准）
+- 四维图读法：横轴=参数量（越大越强越贵）、纵轴=平均任务得分、
+  气泡大小=嵌入维度、气泡颜色=最大处理长度
+- 重点维度：Task（RAG看Retrieval排名）、Language（中文支持）、Size、Dimensions、Max Tokens、Cost
+榜单不是最终答案，对于自己制作的模型，重点是选基线、建私有评测集，然后迭代测试优化
+
+### 第二节 多模态嵌入
+
+**一、为什么需要**
+- 文本向量和图像向量在隔离空间，中间有一堵"模态墙"：文本嵌入无法理解"那张有红色汽车的图片"这种查询
+- 目标：把图文音视频映射到同一个共享向量空间（"一只奔跑的狗"的文字向量 ≈ 狗奔跑图片的向量）
+- 关键挑战：跨模态对齐
+
+**二、CLIP（OpenAI，图文多模态范式开创者）**
+- 双编码器架构：图像编码器 + 文本编码器，各自映射到同一个共享向量空间
+- 训练：对比学习——最大化正确图文对的相似度，最小化所有错误配对的相似度
+- 零样本能力：分类任务变图文检索（判断图片是不是猫 = 算图片向量与"a photo of a cat"的相似度），无需微调
+
+**三、bge-visualized-m3（BAAI，BGE-M3 文本底座 + 图像能力）**
+- M3 = 多语言（100+语言）/ 多功能（密集检索 + 多向量检索）/ 多粒度（短句到 8192 token）
+- 架构：视觉编码器提取图像patch token → 映射成图像token → 与文本token一起进BGE的Transformer联合建模
+
+**四、代码示例 01_bge_visualized.py**
+- encode 三种模式：纯文本 / 纯图像 / 图文联合
+- sim = a @ b.T：矩阵乘算余弦相似度（向量已归一化，点积=余弦）
+
+针对代码，我做了三次实验，替换文字：logo文本 / blue whale / apple
+| 对比 | logo文本 | blue whale | apple |
+| 纯图 vs 纯图 | 0.8318 | 0.8318 | 0.8318 |
+| 图文1 vs 纯图1 | 0.8291 | 0.9218 | 0.8279 |
+| 图文1 vs 纯文本 | 0.7627 | 0.7572 | 0.7068 |
+| 图文1 vs 图文2 | 0.9058 | 0.8719 | 0.8926 |
+
+结论：
+1.图文结合向量里图像成分占大头，所以即使apple和图片完全不搭，图文vs纯图仍有0.83
+2.同样的错误文字也反而拉高了相似度，因为两个向量都装着同一个apple，都朝apple方向偏同样一截，所以图文1vs图文2反而被拉高，这就好比两个人都戴错同一顶帽子，站一起反而更像了
+3.文字贴合图（blue whale）的图文vs纯图相似度达到0.92；文字不搭的apple回落到0.83；
+
+## 2026-10-19 C3 第三节 向量数据库：FAISS
+
+### 一、内容总结
+- 要解决的问题：向量从几百条涨到几亿条，如何快速找到与查询最相似的那几个？
+  方法是用专门的索引技术（HNSW、IVF 等）做近似最近邻（ANN）搜索，毫秒级返回
+- 主要功能：高效相似性搜索、高维向量存储管理（增删改查）、丰富查询能力（如标量过滤 year>2023）、可扩展高可用、与AI框架生态集成
+- 与传统数据库（MySQL）的区别：
+  向量数据库的核心数据类型是高维向量，传统数据库是结构化数据（文本/数字/日期）；查询方式上，前者是相似性搜索（"最像的3个"），后者是精确匹配（WHERE age=25；向量数据库采用的索引机制是HNSW / IVF / LSH，而传统数据库多利用B-Tree / Hash。二者是互补关系：业务元数据存MySQL，AI产生的海量向量存向量库
+- 工作原理：四层架构（存储层→索引层→查询层→服务层）；
+  四类索引技术：树（Annoy随机投影树）、哈希（LSH相似向量进同一桶）、图（HNSW多层邻近图）、量化（IVF/PQ聚类压缩）
+- FAISS的特殊身份：本质是算法库，不是数据库服务，因为索引直接存成本地文件（.faiss + .pkl），没有服务器，轻量高效
+
+### 二、02_langchain_faiss.py代码解读
+- 准备数据：texts是3条示例文本模拟知识库；
+  docs = [Document(page_content=t) for t in texts] 是列表推导式，把每条纯文本包装成Document对象
+- 为什么Document(page_content=t)就可以遍历texts？
+  循环由for t in texts负责，Document(page_content=t)只是每轮执行的动作（把t包装成 Document）。page_content=t：Document(...)是构造调用，page_content是它的参数名（"正文内容"），把t传进去，也就是page_content=正文内容
+- embeddings：翻译员，把文本翻译成512维向量
+- 核心行vectorstore = FAISS.from_documents(docs, embeddings)：一步建库，内部四层嵌套
+  ① from_documents（封装层：提取纯文本和元数据）
+  ② from_texts（向量化入口：embed_documents 批量翻译成向量）
+  ③ __from（建空框架：默认 L2 欧氏距离初始化空索引，准备 docstore 和 id 映射）
+  ④ __add（填充：向量转 numpy 数组进索引、原文存 docstore、建立"整数编号→文档"映射）
+- vectorstore.save_local("./faiss_index_store")：持久化——生成两个文件：
+ index.faiss（向量索引）+ index.pkl（文档原文+id映射）；./ 表示当前目录
+-重载FAISS.load_local(path, embeddings,
+					   allow_dangerous_deserialization=True)：
+  必须传同一个embeddings（换了翻译员坐标体系不同没法比）；
+  allow_dangerous_deserialization=True是显式确认pkl文件可信（pkl反序列化可以执行任意代码）
+- similarity_search(query, k=1)：问题向量化 → ANN 搜索 → 返回最像的k个Document
+
+### 三、练习记录
+**练习1：跑通03，查看LlamaIndex的JSON存储**
+- 生成llamaindex_index_store/ 五个JSON文件：
+  - default__vector_store.json（34KB）：向量仓库——embedding_dict里 键=每篇的UUID编号，值=512维向量；
+    text_id_to_ref_doc_id是"节点编号→原文档编号"映射；metadata_dict存元数据
+  - docstore.json：文档仓库——原文 + doc_hash（内容指纹）
+  - index_store.json：索引登记表——加载时靠它知道该读哪些文件
+  - graph_store / image__vector_store：空
+- 对比FAISS：二进制2个文件 vs JSON 5个文件（可读）；整数编号0,1,2 vs 36位UUID；
+  本质是同一设计，都是向量+原文成对存、靠编号相连
+
+**练习2：自己写加载+检索脚本**
+- 加载三步：
+Settings.embed_model请同款翻译员
+StorageContext.from_defaults(persist_dir=...)当"地图"
+load_index_from_storage按图重建索引
+- 存读对称：作者的代码用VectorStoreIndex.from_documents建，我这里用load_index_from_storage重建；
+persist写，通过StorageContext.from_defaults找回来
+- as_retriever(similarity_top_k=1)：只检索不生成的纯入口，不需要LLM/API key（对比C1的as_query_engine是检索+生成打包）
+另外还发现离线开关不是万能的
+- llama_index的嵌入类不吃离线开关（加了HF_HUB_OFFLINE=1仍然联网检查报错），但吃镜像地址
+- 解决方法：改用os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'

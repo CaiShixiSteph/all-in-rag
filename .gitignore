@@ -71,3 +71,6 @@ rag/
 # LLM API keys
 *.key
 *.secret
+
+# 本地生成的索引存储
+llamaindex_index_store/

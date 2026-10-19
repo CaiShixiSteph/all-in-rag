@@ -1,3 +1,6 @@
+import os
+os.environ['HF_HUB_OFFLINE'] = '1'          # 模型已在本地缓存，禁止联网检查
+os.environ['TRANSFORMERS_OFFLINE'] = '1'    # transformers 也走离线
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
