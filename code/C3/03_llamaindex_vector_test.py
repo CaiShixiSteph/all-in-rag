@@ -5,10 +5,10 @@ from llama_index.core import Settings, StorageContext, load_index_from_storage
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
 # 1. 配置全局嵌入模型
-Settings.embed_model = HuggingFaceEmbedding('BAAI/bge-small-zh-v1.5')
+Settings.embed_model = HuggingFaceEmbedding("BAAI/bge-small-zh-v1.5")
 
 # 2. 创建索引
-store_context = StorageContext.from_defaults(persist_dir="./llamaindex_index_store")
+store_context = StorageContext.from_defaults(persist_dir = "./llamaindex_index_store")
 index = load_index_from_storage(store_context)
 print("LlamaIndex 索引已加载成功。")
 
