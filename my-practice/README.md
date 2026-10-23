@@ -416,3 +416,166 @@ Schema规定了Collection的数据结构，定义了其中包含的所有字段 
 - `search(...)[0]`：结果按查询向量分组，传几个查询向量就有几组，这里只传1个所以取第 0 组
 - 最后release（搬下内存）+ drop（删除）
 
+总体流程：
+1. 拿起对讲机：
+milvus_client = MilvusClient(uri="http://localhost:19530")
+2. 建图书馆（先拆旧的，再建新的）
+如果 COLLECTION_NAME 已存在，先 drop 掉（has_collection, drop_collection）
+然后到fields（Schema结构）
+3. 用Schema创建Collection
+create_collection，然后再批量插入
+data_to_insert、milvus_client.insert
+4. 建检索卡 + 搬上阅览桌
+prepare_index_params 后 add_index
+然后create_index、load_collection
+5. 检索
+search_results = milvus_client.search
+6. 清场
+release_collection、drop_collection
+
+## 2026-10-22 C3第五节
+
+### 一、第五节 1.2 理论：句子窗口检索
+- 解决的矛盾（C2 分块两难的解法）：块小→检索精确但LLM没上下文；块大→上下文足但向量被稀释
+- 核心思想：索引小块、搜索小块、交付大块——搜索阶段用小卡片保证命中精准，交付阶段把命中的卡片换成大卡片保证上下文丰富。
+- 四步流程：索引（每句一个节点，窗口存metadata）→ 检索（只搜单句向量）→ 后处理（MetadataReplacementPostProcessor 把text替换成窗口）→ 生成
+- 节点结构：`text`=单句（嵌入用）；`metadata['window']`=前后各N句（生成用）
+- 关键：excluded_embed_metadata_keys / excluded_llm_metadata_keys（黑名单机制）：
+  - 嵌入模型和LLM都"看不见" window，不排除的话，相邻句子的窗口高度重叠（7句共用6句）→ 向量雷同 → 检索失效；LLM 还会收到重复内容
+  - window是节点身上的"暗格"，只有后处理器有钥匙，只在生成前打开一次
+- 类比：图书卡正面印一句话摘要（检索用），背面完整上下文贴封条"非后处理器不得翻阅"
+
+### 二、1.2代码要点
+**先立核心思想——大小块分工：**
+一句话：**索引小块、搜索小块、交付大块。**
+同一个节点小块和大块同时存在：`text` = 单句（小块，给搜索用）；`metadata['window']` = 前后各3句拼成的段落（大块，给LLM用）。谁看谁、什么时候看，由两条黑名单 + 后处理器精确控制。
+
+**建句子窗口索引（小块）**
+node_parser = SentenceWindowNodeParser.from_defaults(
+    window_size=3,                              # 窗口半径：前后各3句
+    window_metadata_key="window",               # 大块存进 metadata 的哪个键
+    original_text_metadata_key="original_text", # 原句备份到哪个键
+)
+sentence_nodes = node_parser.get_nodes_from_documents(documents)
+sentence_index = VectorStoreIndex(sentence_nodes)
+
+作者补充了 `SentenceWindowNodeParser` 的**源码四步**——这就是"大小块同体"的生产过程：
+1. **句子切分**：`sentence_splitter(doc.text)` 把整篇文档切成句子列表（小块原料）
+2. **创建基础节点**：`build_nodes_from_splits` 为每个句子建一个TextNode，此时每个节点的`text`就是那个句子（小块）
+3. **构建窗口并填充元数据（主循环）**：遍历所有节点，对第i个节点执行：
+   - **定位窗口**：列表切片`nodes[max(0, i-window_size): min(i+window_size+1, len(nodes))]`——取"前3句+自己+后3句"；`max(0,...)` 和 `min(...,len)` 两个夹子专门处理开头结尾的越界问题（大块的裁剪）
+   - **组合窗口文本**：把窗口内所有句子的text用空格拼成一个长字符串（大块）
+   - **填充元数据**：长字符串存进`metadata['window']`，原句存进 `metadata['original_text']`
+4. **设置元数据排除项**
+`node.excluded_embed_metadata_keys.extend([...])`和`node.excluded_llm_metadata_keys.extend([...])`两条黑名单，确保嵌入模型和LLM都"看不见" window/original_text，只有后处理器有钥匙
+
+**常规分块索引（对照组）**
+base_parser = SentenceSplitter(chunk_size=512)
+base_nodes = base_parser.get_nodes_from_documents(documents)
+base_index = VectorStoreIndex(base_nodes)
+512字符一块， 没有小块大块的分工，这就是对照组要暴露的问题。实验设计：同文档、同问题、同top_k，只差索引策略一个变量。
+
+**查询引擎**
+sentence_query_engine = sentence_index.as_query_engine(
+    similarity_top_k=2,
+    node_postprocessors=[
+        MetadataReplacementPostProcessor(target_metadata_key="window")
+    ],
+)
+
+- `similarity_top_k=2`：召回2个最相关的小块（单句节点）
+- `node_postprocessors`：检索后处理器：
+`MetadataReplacementPostProcessor`读取节点的`metadata['window']`，用它替换节点的`text`。从此节点在LLM眼里就是大块，这里就是出现差异的核心
+- base引擎没有后处理器：LLM直接收到2个512字符块
+
+| 阶段 | 用小块还是大块 | 谁在做 |
+| 建库嵌入 | 小块（单句向量） | 嵌入模型（黑名单保证纯净） |
+| 相似度搜索 | 小块（单句向量） | 检索器 |
+| 后处理 | 小块→大块的交接| MetadataReplacementPostProcessor |
+| 生成答案 | 大块（窗口段落） | LLM |
+搜的时候用"目录卡片"（小块），拿走的时候是"整本书"（大块）；中间那个"换书"动作就是后处理器。
+
+### 三、实验输出对比（窗口版 vs 常规版）
+- 共同点：核心事实4项全命中——检索阶段命中的是同一批核心句子（检索精度的功劳）
+- 差异在主题句：窗口版 "uncertainty and limited observational records" 更贴原文（站在段落高度组织答案）；常规版 "detecting and attributing changes" 是LLM自己概括转述
+
+
+## 2026-10-23 C3第五节（2）：结构化索引——递归检索
+
+### 一、本节笔记：递归检索解决什么问题
+问题：异质数据（多张Excel表、多个文档、数据库……）混在一起时，全部打碎塞进一个索引，检索精度会很差，向量相似度分不清"哪个问题该去哪个数据源找答案"。解决思路是采用总分结构 + 路由。
+具体来说：
+1. 每个子数据源（每张表）生成一个摘要summary
+2. 摘要做成指针节点（IndexNode），挂上`index_id`（分机号）
+3. 顶层只建一个向量索引，里面只存这些摘要（轻量、专一）
+4. 查询时：顶层检索定方向 → 顺着指针到子层 → 子层用自己的引擎真正回答
+
+可类比为四个角色：
+| 角色 | 类 | 职责 |
+| 总机 | `VectorStoreIndex`（顶层） | 把问题向量化，和摘要比相似度，决定该找谁 |
+| 接线员 | `RecursiveRetriever` | 识别命中的是不是指针节点，是就顺着index_id转接 |
+| 业务员 | `PandasQueryEngine` | 把自然语言翻译成pandas代码并执行，真正给答案 |
+| 路标 | `IndexNode` | text 是摘要，index_id指向子引擎（自己不回答问题） |
+
+### 二、06 代码详解
+**循环四张表（21-40 行）**：
+xls = pd.ExcelFile(excel_file)          # 打开整个Excel文件
+for sheet_name in xls.sheet_names:   # 遍历：年份_1994~年份_1997四张表
+    df = pd.read_excel(xls, sheet_name=sheet_name)
+    query_engine = PandasQueryEngine(df=df, llm=Settings.llm, verbose=True)  # 业务员
+    summary = f"这个表格包含了年份为{year}的电影信息..."   # 摘要
+    node=IndexNode(text=summary, index_id=sheet_name)      # 路标
+    df_query_engines[sheet_name] = query_engine  # 电话簿：分机号 → 业务员
+
+关键：index_id=sheet_name（即"年份_1994"）和电话簿的key必须一致，接线员就是靠这个id去查电话簿找业务员的。
+顶层索引（43行）：VectorStoreIndex(all_nodes) —— 总机，只索引4个摘要节点。
+递归检索器（47-55行）：
+vector_retriever = vector_index.as_retriever(similarity_top_k=1)  # 顶层找最像的1个
+recursive_retriever = RecursiveRetriever(
+    "vector",                                   # 根节点id：从哪开始
+    retriever_dict={"vector": vector_retriever},# 顶层检索器
+    query_engine_dict=df_query_engines,         # 电话簿
+    verbose=True,                               # 打印转接记录
+)
+包装执行（58-64 行）：RetrieverQueryEngine.from_args(recursive_retriever) 把接线员包装成标准查询引擎，query提问、response回答。
+
+可以用打电话来记
+打10086："1994年评分人数最少的电影是哪一部？"（第1行，总机VectorStoreIndex接线） 
+话务员："转接中，进入1994专席"（第2行RecursiveRetriever，entering） 
+专席客服拿起电话，把刚才的话原封不动复述一遍确认："1994年评分人数最少的电影是哪一部？"（第3行，业务员PandasQueryEngine接单） 
+然后他查表、报出答案："燃情岁月。"
+
+### 三、2.2 笔记：路由与检索彻底分离
+动机：2.1的PandasQueryEngine靠`eval()`执行LLM现场生成的代码，能执行任意Python，生产环境不敢用。2.2换一条更安全的路，完全不写代码，把"该找谁"和"怎么答"拆成两个独立的索引。
+
+**两个索引 + 两步查询**：
+| | 索引 | 装什么 | 职责 |
+| 路由器 | 摘要索引 | 每张表一句摘要Document| 只回答：该找哪张表 |
+| 问答库 | 内容索引 | 整张表转成文本，挂 `metadata={"sheet_name": "年份_1994"}` | 真正提供答案 |
+
+1. 路由：问题在摘要索引检索，拿到元数据里的sheet_name
+2. 检索：在内容索引检索，加元数据过滤器（ExactMatchFilter），强制只在 `sheet_name == "年份_1994"` 的文档里搜
+
+**2.1 vs 2.2对比**：
+| | 2.1 递归检索 | 2.2 分离式两步检索 |
+| 路由方式 | 指针节点（IndexNode.index_id），框架自动转接 | 独立摘要索引 + 自己写代码读metadata |
+| 回答问题 | LLM写代码精确计算（idxmin） | 整表文本交给LLM阅读理解|
+| 安全性 |  eval()有隐患 | 无代码执行 |
+| 适合 | 表大、需要精确计算 | 表小、整表能被LLM读完 |
+
+### 四、07代码详解
+**数据清洗段（29-31行，2.1没有的新增）**：
+df['评分人数'] = df['评分人数'].astype(str).str.replace('人评价', '').str.strip()
+df['评分人数'] = pd.to_numeric(df['评分人数'], errors='coerce').fillna(0).astype(int)
+
+原数据是"102345人评价"字符串。2.1不需要清洗（LLM写代码时自己处理）；2.2 把表转成纯文本让LLM读，清洗后文本更干净。errors='coerce' = 转不动就填NaN的容错写法。
+双文档列表：2.1的路标是IndexNode（带index_id指针，框架自动转接）；2.2的路标是普通Document（文本 + 标签），转接逻辑由我们自己写，这就是"分离"的含义。df.to_string(index=False) 把整张DataFrame拍平成一个字符串。
+
+输出对比：07的回答比06更丰富，06只答"燃情岁月"（代码只返回了片名列的值），07答"《燃情岁月》，评分人数为176801"。因为整张表文本都交给了LLM，它阅读时顺手把数字也念出来了。这就是"精确计算"与"阅读理解"两种不同方式的直观体现。
+
+### 五、为什么2.1要执行代码，2.2不用
+2.1：问题是计算题，算的是计算机里的pandas程序，答案藏在计算结果里，代码必须被eval()执行。危险在于执行的是LLM现场生成、受用户输入左右的代码（因为有提示词注入，还可能有一些恶意问题的输入导致生成恶意代码，这样一来就会导致回答的结果错误甚至系统被破坏）
+2.2：建索引时数据就已转成文本（我们自己的代码，查询前跑一次），查询阶段LLM只读不算，输出从头到尾只是文本，最坏结果也只是答案念错了
+账本比喻：2.1是让会写代码的员工写程序算（快准，但可能被教唆夹带私货）；2.2是把账本摊桌上用眼睛找（安全，但账本大了读不动）
+关键：危险的不是"执行代码"本身，而是执行LLM查询时临场生成的代码
+

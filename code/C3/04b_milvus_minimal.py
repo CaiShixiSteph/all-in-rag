@@ -7,11 +7,11 @@ COLLECTION_NAME = "hello_milvus"
 
 # ========== 第 1 步：拿起对讲机 ==========
 # ===== 填空 1 =====  # 创建 Milvus 客户端，连 http://localhost:19530
-milvus_client = MilvusClient(uri="http://localhost:19530") 
+milvus_client = MilvusClient(uri="http://localhost:19530")
 # ========== 第 2 步：建图书馆（先拆旧的，再建新的） ==========
 # ===== 填空 2 =====  # 如果 COLLECTION_NAME 已存在，先 drop 掉（幂等）
 if milvus_client.has_collection(COLLECTION_NAME):
-    milvus_client.drop_collection(collection_name=COLLECTION_NAME)
+    milvus_client.drop_collection(COLLECTION_NAME)
 fields = [
     # ===== 填空 3 =====  # 字段1：id，INT64，主键，自增
     FieldSchema(name='id', dtype=DataType.INT64, is_primary=True, auto_id=True),
@@ -22,8 +22,7 @@ fields = [
 ]
 schema = CollectionSchema(fields, description="最小练习")
 # ===== 填空 6 =====  # 用上面的 schema 创建 Collection
-milvus_client.create_collection(collection_name=COLLECTION_NAME, schema = schema)
-print('Schema结构:',schema)
+milvus_client.create_collection(collection_name=COLLECTION_NAME, schema=schema)
 # ========== 第 3 步：插 3 本书（数据给你，插入你来） ==========
 data = [
     {"vector": [1, 0, 0, 0], "text": "苹果"},
@@ -34,18 +33,16 @@ data = [
 data_to_insert = []
 for d in data:
     data_to_insert.append({"vector": d["vector"], "text": d["text"]})
-
 if data_to_insert:
     result = milvus_client.insert(collection_name=COLLECTION_NAME, data=data_to_insert)
-    print(f"成功插入 {result['insert_count']} 条数据。")
-
+    print(f"插入了 {result['insert_count']} 条数据。")
 # ========== 第 4 步：建检索卡 + 搬上阅览桌 ==========
 # ===== 填空 8 =====  # prepare_index_params 后 add_index：field_name="vector"，HNSW，COSINE
 index_params = milvus_client.prepare_index_params()
 index_params.add_index(
-    field_name = 'vector',
-    index_type = 'HNSW',
-    metric_type = 'COSINE',
+    field_name="vector",
+    index_type="HNSW",
+    metric_type="COSINE",
     params = {"M": 16, "efConstruction": 256}
 )
 # ===== 填空 9 =====  # create_index
@@ -56,11 +53,11 @@ milvus_client.load_collection(collection_name=COLLECTION_NAME)
 query_vector = [1, 0, 0, 0]
 # ===== 填空 11 =====  # search：data=[query_vector]，output_fields=["text"]，limit=3，COSINE+ef
 search_results = milvus_client.search(
-    collection_name = COLLECTION_NAME,
-    data = [query_vector],
-    output_fields = ['text'],
-    limit = 3,
-    search_params = {"metric_type":'COSINE', "params": {'ef': 128}}
+    collection_name=COLLECTION_NAME,
+    data=[query_vector],
+    output_fields=["text"],
+    limit=3,
+    search_params={"metric_type": "COSINE", "params": {"ef": 256}}
 )[0]
 # 变量名必须是 search_results，下面打印代码给你，不动：
 for i, hit in enumerate(search_results):
@@ -68,7 +65,7 @@ for i, hit in enumerate(search_results):
 
 # ========== 第 6 步：清场 ==========
 # ===== 填空 12 =====  # release_collection
-milvus_client.release_collection(collection_name = COLLECTION_NAME)
+milvus_client.release_collection(collection_name=COLLECTION_NAME)
 # ===== 填空 13 =====  # drop_collection
-milvus_client.drop_collection(collection_name = COLLECTION_NAME)
+milvus_client.drop_collection(collection_name=COLLECTION_NAME)
 print("已清场。")
