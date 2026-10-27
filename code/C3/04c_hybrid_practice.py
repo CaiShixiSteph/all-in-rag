@@ -12,6 +12,7 @@
 
 import json
 import os
+os.environ['HF_HUB_OFFLINE'] = '1'
 import torch
 from visual_bge.visual_bge.modeling import Visualized_BGE
 from pymilvus import (connections, MilvusClient, FieldSchema, CollectionSchema,
@@ -66,9 +67,9 @@ fields = [
     FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=4096),
     FieldSchema(name="multimodal_vector", dtype=DataType.FLOAT_VECTOR, dim=multimodal_dim),
     # ===== 填空 2 =====  # 文本稀疏向量字段：SPARSE_FLOAT_VECTOR
-    FieldSchema(name='text_sparse_vector', dtype=DataType.SPARSE_FLOAT_VECTOR),
+    FieldSchema(name="text_sparse_vector",dtype=DataType.SPARSE_FLOAT_VECTOR),
     # ===== 填空 3 =====  # 文本密集向量字段：FLOAT_VECTOR，dim 用 dense_dim
-    FieldSchema(name='text_dense_vector', dtype=DataType.FLOAT_VECTOR, dim=dense_dim)
+    FieldSchema(name="text_dense_vector",dtype=DataType.FLOAT_VECTOR, dim=dense_dim)
 ]
 collection = Collection(name=COLLECTION_NAME,
                         schema=CollectionSchema(fields, description="04+hybrid 动手实践"),
@@ -80,10 +81,12 @@ multimodal_index = {"index_type": "HNSW", "metric_type": "COSINE",
 collection.create_index("multimodal_vector", multimodal_index)
 
 # ===== 填空 4 =====  # 稀疏索引：SPARSE_INVERTED_INDEX + IP（01 第 50 行同款）
-collection.create_index("text_sparse_vector", {"index_type": "SPARSE_INVERTED_INDEX", "metric_type": "IP"})
+sparse_index = {"index_type":"SPARSE_INVERTED_INDEX", "metric_type":"IP"}
+collection.create_index("text_sparse_vector", sparse_index)
 
 # ===== 填空 5 =====  # 密集索引：AUTOINDEX + IP（01 第 54 行同款）
-collection.create_index("text_dense_vector", {"index_type": "AUTOINDEX", "metric_type": "IP"})
+dense_index = {"index_type":"AUTOINDEX", "metric_type":"IP"}
+collection.create_index("text_dense_vector", dense_index)
 
 collection.load()
 
@@ -163,7 +166,7 @@ sparse_req = AnnSearchRequest([sparse_vec], "text_sparse_vector", search_params,
 
 # ===== 填空 12 =====  # 三件套之三：hybrid_search 执行融合（01 第 192-197 行同款）
 hybrid_results = collection.hybrid_search(
-    [sparse_req, dense_req],
+    [dense_req, sparse_req],
     rerank=rerank,
     limit=3,
     output_fields=output_fields

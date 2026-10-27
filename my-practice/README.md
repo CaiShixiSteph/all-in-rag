@@ -283,6 +283,7 @@ gradient：切出2块，找差异突增的坡度，最敏感
 2.同样的错误文字也反而拉高了相似度，因为两个向量都装着同一个apple，都朝apple方向偏同样一截，所以图文1vs图文2反而被拉高，这就好比两个人都戴错同一顶帽子，站一起反而更像了
 3.文字贴合图（blue whale）的图文vs纯图相似度达到0.92；文字不搭的apple回落到0.83；
 
+
 ## 2026-10-19 C3 第三节 向量数据库：FAISS
 
 ### 一、内容总结
@@ -724,3 +725,41 @@ RRF分数反推验证：
 候选池 = 两路top3的并集：霸王龙两路都进不了前3，直接没有参赛资格（虽然多模态路它是第3）。
 
 
+## 2026-10-27 C4第二节：查询构建
+
+### 一、查询构建是什么
+之前所有检索都是语义相似度（自然语言 → 向量 → 找相似）。但现实数据有三类：非结构化（纯文本）、半结构化（带元数据的文档）、结构化（SQL/图数据库），用户的查询也常常带条件（"2022年发布的论文"、"时长大于600秒的视频"），语义搜索处理不了。
+查询构建就是用LLM把自然语言查询翻译成针对特定数据源的结构化查询语言或过滤条件，让RAG能吃各种类型的数据。
+核心思想：LLM当翻译官，用户说人话，LLM将其翻译成机器话，数据库执行机器话。
+
+### 二、文本到元数据过滤器（自查询检索器Self-Query Retriever）
+工作原理3步：
+1. 定义元数据结构：向LLM描述文档内容和每个字段的含义/类型
+2. 查询解析：LLM把查询拆成两部分，包括query string（语义搜索）和metadata filter（结构化过滤）
+3. 执行查询：一次同时包含语义搜索和元数据过滤的复合查询
+例：用户输入"关于2022年发布的机器学习的论文" → query="机器学习的论文"，filter="year == 2022"
+
+### 三、代码要点
+1. BiliBiliLoader加载B站视频；元数据预处理：原始metadata嵌套复杂（owner.name、stat.view），我们手动提取扁平化字段（title/author/source/view_count/length），可以保证后续检索器能直接可靠访问
+2. Chroma向量库 + bge-small-zh-v1.5
+3. AttributeInfo：与LLM沟通的蓝图，每个字段的名字、类型、自然语言 description。LLM就是靠这份description描述理解字段含义（如"视频长度（整数）"→ 解析"时长"的过滤请求）。描述必须准确无歧义
+4. SelfQueryRetriever.from_llm底层：
+   - 加载查询构造器（query constructor chain）：llm + document_contents + metadata_field_info → 把自然语言转成通用结构化查询对象
+   - 获取内置翻译器（translator）：针对具体向量库（Chroma）把通用查询对象翻译成它原生的过滤语法
+5. retriever.invoke：依次执行"构造 → 翻译"，发起复合查询
+6. temperature=0：输出完全确定，相同输入永远相同输出。查询构造需要精确转换，必须稳定可复现。当然，如果想要输出随机有创意，就可以设置较高的温度
+7. 输出解读：
+   - "时间最短的视频" → query=' ' filter=None limit=1：LLM 理解为"取1 条"，但没有排序 → 返回1063秒的视频，错误
+   - "时长大600秒的视频" → Comparison(comparator=GT, attribute='length', value=600)：正确生成比较过滤器，返回 806秒/1063秒两条
+
+### 四、思考题：为什么"时间最短的视频"查错了？
+因为最短是排序和取极值的概念，要回答它，系统得先按length从小到大排一遍，再取第1条。但Self-Query Retriever的武器只有三件：语义相似度、元数据过滤、limit截断。没有按某字段排序，更没有min()。过滤语法要求字段有具体数值（如length < 600），但是最短没有参照数值，翻译不出来。LLM于是静默降级，也就是filter直接放弃（None），只剩limit=1，它以为取1条就够。但limit只是从相似度排序里截前1条，不是时长最短的1条，结果806秒那条显然不是最短。
+
+### 五、文本到Cypher（图数据库）
+- Cypher：图数据库（Neo4j）的查询语言，地位类似SQL之于关系数据库；用模式匹配表达关系，如 (:Person {name:"Tomaz"})-[:LIVES_IN]->(:Country {name:"Slovenia"})
+- 原理与文本到元数据过滤器同构：LLM把自然语言翻译成Cypher；LangChain 工具链：GraphCypherQAChain
+- 4步：接收问题 → LLM按图谱Schema生成Cypher → 图数据库执行 → （可选）结果再交给LLM生成自然语言答案
+- 生成Cypher任务复杂，通常用较强的 LLM
+
+### 六、与C3 2.2的联系
+07的MetadataFilters是手写过滤条件（手工门禁）→ 本节的Self-Query Retriever是LLM自动生成过滤条件（自动门禁）。也就是说，条件还是那个条件，但是写条件的人从人变成了LLM。

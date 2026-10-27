@@ -1,4 +1,5 @@
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import pandas as pd
 from dotenv import load_dotenv
 from llama_index.core import VectorStoreIndex, Document, Settings
