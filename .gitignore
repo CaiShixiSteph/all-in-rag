@@ -75,3 +75,4 @@ rag/
 # 本地生成的索引存储
 llamaindex_index_store/
 data/C4/*.png
+data/C4/*.png
