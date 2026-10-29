@@ -1,4 +1,5 @@
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_deepseek import ChatDeepSeek
@@ -70,6 +71,7 @@ demo_queries = [
     "水煮鱼怎么做才嫩？",        # 应该路由到川菜
     "如何做一碗清淡的云吞面？",    # 应该路由到粤菜
     "麻婆豆腐的核心调料是什么？",  # 应该路由到川菜
+    "番茄炒蛋需要放糖吗？"
 ]
 
 for i, query in enumerate(demo_queries, 1):
