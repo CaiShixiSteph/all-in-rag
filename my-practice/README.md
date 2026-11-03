@@ -889,3 +889,122 @@ demo零重试每个问题命中一个结构同款的Q-SQL示例，LLM只是学�
 Text2SQL系统本身是一个处理组件；路由负责判断这个问题该不该派给它，比如"我上次订购了什么"，就要路由到SQL库，Text2SQL就负责派到之后把问题变成SQL。
 
 
+# 2026-11-03 C4 第五节 检索进阶
+## 一、本节目的
+基础RAG只靠向量相似度检索，有三大局限：①最相关文档不一定排最前；②检索块含大量噪音文本（浪费token还降低生成质量）；③盲信检索结果（检索失败，喂了有毒的文档，导致幻觉）。
+本节讲三大检索后处理技术：重排序、压缩、校正。
+升级后的流水线：召回 → 重排（精排）→ 压缩（去噪）→ 校正（防毒）→ 生成。
+
+## 二、重排序（Re-ranking）
+目标：对初检结果重新打分排序，让最相关的排到前面。
+### 1. RRF（Reciprocal Rank Fusion）
+混合检索章用它融合稀疏+密集两路结果。零样本、无需训练，纯按文档在各路结果中的排名倒数算分。
+- 思想：多路都排前的文档更重要。缺点：只认排名，丢失原始相似度分数。
+
+### 2. RankLLM / LLM-based Reranker
+- 逻辑：既然最后是LLM生成答案，不如让LLM直接判断哪些上下文最相关。
+- 提示词：查询 + 编号文档列表（摘要），要求按相关性排序输出编号和分数（如 "Doc: 9, Relevance: 7"）。
+
+### 3. Cross-Encoder重排
+- 把查询和每篇文档拼接成一个输入（[CLS] query [SEP] doc [SEP]）送进BERT，输出单一相关分（0~1）。
+- 高精度来源：查询+文档同时分析；高延迟来源：N篇文档需要N次独立推理。
+- 常见模型：ms-marco-MiniLM-L-12-v2等。[SEP]是BERT里分隔文本片段的特殊标记。
+
+### 4. ColBERT重排
+- 折中方案：①独立编码，查询和文档的每个Token各自生成向量（文档可预存，就可以加速查询）；②后期交互，查询时算查询每个Token与文档各Token的最大相似度MaxSim；③分数聚合，所有MaxSim求和，得到最终相关性。
+- 避免了拼接联合编码的昂贵成本，又比双编码器（只比单个[CLS]向量）捕捉到更细粒度的词汇级交互。
+
+### 5. 对比表
+| 特性 | RRF | RankLLM | Cross-Encoder | ColBERT |
+| 核心机制 | 融合多个排名 | LLM推理生成排序 | 拼接编码算单一分数 | 独立编码+后期交互 |
+| 计算成本 | 低 | 中（API费+延迟） | 高（N次推理） | 中（向量点积） |
+| 交互粒度 | 无（仅排名） | 概念/语义级 | 句子级 | Token级 |
+| 适用场景 | 多路召回融合 | 高价值语义场景 | Top-K精排 | Top-K重排 |
+
+## 三、压缩（Compression）
+目标：初检文档块含噪音，压缩后只保留与查询最直接相关的内容。
+两种方式：内容提取（抽相关句子段落）／ 文档过滤（丢弃不相关整篇）。
+
+### LangChain实现
+- `ContextualCompressionRetriever`：包装器，套在基础检索器外，先检索、再用指定压缩器处理、最后返回。
+- 三种内置 `DocumentCompressor`：
+  - `LLMChainExtractor`：LLM逐文档提取相关部分（内容提取）
+  - `LLMChainFilter`：LLM判断整篇相关否，不相关整篇丢弃（文档过滤）
+  - `EmbeddingsFilter`：嵌入相似度低于阈值就丢（快、省、不调LLM）
+
+### 自定义ColBERTReranker
+LangChain无内置ColBERT重排器，标准探索流程：
+官方文档 → 发现需求缺口 → 分析`ContextualCompressionRetriever`用法和源码（两步：base_retriever取文档 → base_compressor处理）→ f12定位核心基类 `BaseDocumentCompressor` → 继承并实现 `compress_documents`。
+方法论：框架没现成功能时，先找核心切入点基类，再继承实现。
+基础薄弱时借助大模型写：提供`BaseDocumentCompressor`源码、`ContextualCompressionRetriever`源码及示例、明确目标、其他重排器参考代码。
+
+### 管道组装
+`DocumentCompressorPipeline(transformers=[reranker, compressor])`按顺序串处理器（先ColBERT重排，再LLM提取压缩），整体作为`ContextualCompressionRetriever`的`base_compressor`，实现"检索 → 重排 → 压缩"全自动流程。
+
+### LlamaIndex 拓展
+`SentenceEmbeddingOptimizer`：后处理器，把文档拆句、算每句与查询的嵌入相似度、只留最相关的句子。
+
+## 四、校正（Corrective-RAG, C-RAG）
+传统RAG隐含假设检索到的都对；现实会检索失败。C-RAG加事实核查层防幻觉。
+流程"检索-评估-行动"：
+- 评估器给每篇文档打标签：正确 / 不正确 / 模糊
+- 正确 → 知识精炼（拆小片段、滤无关、重组精准上下文）
+- 不正确 → 查询重写 + Web搜索（内部答不了求助外部）
+- 模糊 → 原查询直接Web搜索补充
+LangChain用langgraph的图结构实现带条件判断和循环的复杂流程。
+
+## 五、07代码分析
+1.继承`BaseDocumentCompressor` → 实现`compress_documents(documents, query)` → 接口与官方一致，可塞进任何管道。
+2. `object.__setattr__`：BaseDocumentCompressor 是Pydantic模型，普通属性赋值会被拦截报错；用object.__setattr__绕过，给组件挂tokenizer/model的标准技巧。
+3. `last_hidden_state`**：每个token一个向量（不是[CLS]整句汇总），是ColBERT与双编码器的分野配合`F.normalize`（L2归一化）后，`matmul`点积就等于余弦相似度。
+4. mask处理padding：文档padding位置填-1e9，这样我们选max的时候就永远选不中了，查询padding填0（sum贡献为零）。这样做的目的是，padding是把一批长短不一的文本统一补齐到一样长，短文本尾部用[PAD]占位符填满，这样它们才能叠成一个规整的矩阵做批量运算。但模型对padding位置也会输出向量（没有意义的垃圾向量）。如果让它们参与相似度计算，结果就被污染了
+5. FAISS：向量库，纯内存、极快、数据随进程消失（对比前面学过的Chroma本地嵌入式、Milvus独立服务）。
+6. 召回宽（k=20）精排窄（取5）：召回放宽宁多勿漏，精选交给重排层。
+
+## 六、结果分析：输出重复
+### 现象
+07运行后final[1]（失语症段）开头与final[3]（总起段）结尾是同一句话："一个比较明显的问题是，AI生成内容虽然已非常流畅……"。
+### 我的假设
+重复就是来源于，相邻块受overlap的影响，虽然切分上不会重复，但是overlap会导致有重复的内容被送进LLM，然后LLM在内容提取的时候也是独立的，不知道前面的chunk已经提取了这部分内容。这样一来就导致重复了。
+### 我的修法：07b_rerank_dedup.py
+管道末端加句子级去重压缩器（纠错在下游）：`transformers=[reranker, compressor, DedupCompressor()]`。验证：重复句被精确删除。
+### 作者的修法：work_rerank_and_refine.py
+改切分（防错在源头）：`separators=["\n\n","\n","。","！","？","；","，"," ",""]`、`chunk_size=300`、`chunk_overlap=20`。验证：重复消失，且基础检索第一名从谷歌新闻变成最相关的失语症段（完整句子块嵌入质量更高）。
+### 三方对照
+| | 07 原版 | 07b我的修法 | work作者修法 |
+| 思路 | — | 纠错在下游 | 防错在源头 |
+| 重复 | 有 | 精确删除 | 消失 |
+| 附带收益 | — | 通用（任何来源重复都拦） | 基础检索更准、块是完整句|
+| 代价 | — | LLM已花token | 小块可能被噪声重排挤出前5（总起段失踪） |
+结论：两种做法可以都用，源头切分可以有一定设计，省成本，同时也要有去重层，是一种干净的后处理手段。
+
+## 七、DedupCompressor详解（句子级去重压缩器）
+这是一个文字查重员，手里拿一本户口本（set），每来一个文档拆成句子逐句查：没登记的放行+登记，登记过的扣下。
+seen = set()      # 户口本：集合，同一元素只存一次，in查询极快
+for doc in documents:              # 逐文档检查
+    sentences = re.split(r'(?<=[。！？；])', doc.page_content)  # 按句末标点切句
+    kept = []
+    for s in sentences:            # 逐句过安检
+        s = s.strip()              # 去首尾空白
+        if not s: continue         # 空串跳过
+        if s in seen: continue     # 户口本里有 → 重复 → 扣下
+        kept.append(s)             # 新句子 → 放行
+        seen.add(s)                # 登记（先保留后登记 = 先出现者胜）
+    if kept:                       # 去重后还有内容才输出（全重复的文档被整体丢弃）
+        result.append(Document(page_content="".join(kept), metadata=doc.metadata))
+代码详解：
+- `(?<=...)` 是向后断言：下刀位置在标点之后，标点留在前一句（普通split 会把标点忽略掉）。
+- `"".join(kept)` 把幸存句子拼回一段文本；重建Document并继承metadata，接口一致才能塞进管道。
+
+## 八、一些思考
+1. RRF和Cross-Encoder重排的本质区别？
+RRF零成本只认排名、不看内容；Cross-Encoder深度理解语义但要N次推理。
+2. ColBERT为什么是Cross-Encoder和Bi-Encoder的折中？
+独立编码（像双编码器，文档可预存）+ token级后期交互（像交叉编码器的细粒度）。
+3. LLMChainExtractor和LLMChainFilter区别？
+前者抽相关部分（内容提取），后者整篇留/丢（文档过滤）。
+4. 什么场景选EmbeddingsFilter？
+追求快和省，并且对精度要求不极端时。
+5. C-RAG的评估环节为什么能减少幻觉？
+检索失败时不再硬着头皮用错文档生成，而是改写查询/Web搜索补救。
+
