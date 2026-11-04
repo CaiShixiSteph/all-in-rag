@@ -28,15 +28,15 @@ prompt = PromptTemplate(
 )
 
 # # 打印格式指令
-# print("\n--- Format Instructions ---")
-# print(parser.get_format_instructions())
-# print("--------------------------\n")
+print("\n--- Format Instructions ---")
+print(parser.get_format_instructions())
+print("--------------------------\n")
 
 # 4. 创建处理链
 chain = prompt | llm | parser
 
 # 5. 定义输入文本并执行调用链
-text = "张三今年30岁，他擅长Python和Go语言。"
+text = "张三三十岁左右，他擅长Python和Go语言。"
 result = chain.invoke({"text": text})
 
 # 6. 打印结果

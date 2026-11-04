@@ -39,7 +39,7 @@ tools = [
 ]
 
 # 1. 用户提问，模型决策调用工具
-messages = [{"role": "user", "content": "杭州今天天气怎么样？"}]
+messages = [{"role": "user", "content": "今天天气怎么样？"}]
 print(f"User> {messages[0]['content']}\n")
 message = send_messages(messages, tools=tools)
 
@@ -55,7 +55,7 @@ if message.tool_calls:
     messages.append(message)
 
     # 模拟执行工具
-    tool_output = "24℃，晴朗"
+    tool_output = "-24℃，暴风雪"
     print(f"--- 执行工具并返回结果 ---")
     print(f"工具执行结果: {tool_output}\n")
 
