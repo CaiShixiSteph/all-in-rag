@@ -889,7 +889,7 @@ demo零重试每个问题命中一个结构同款的Q-SQL示例，LLM只是学�
 Text2SQL系统本身是一个处理组件；路由负责判断这个问题该不该派给它，比如"我上次订购了什么"，就要路由到SQL库，Text2SQL就负责派到之后把问题变成SQL。
 
 
-# 2026-11-03 C4 第五节 检索进阶
+### 2026-11-03 C4 第五节 检索进阶
 ## 一、本节目的
 基础RAG只靠向量相似度检索，有三大局限：①最相关文档不一定排最前；②检索块含大量噪音文本（浪费token还降低生成质量）；③盲信检索结果（检索失败，喂了有毒的文档，导致幻觉）。
 本节讲三大检索后处理技术：重排序、压缩、校正。
@@ -897,24 +897,24 @@ Text2SQL系统本身是一个处理组件；路由负责判断这个问题该不
 
 ## 二、重排序（Re-ranking）
 目标：对初检结果重新打分排序，让最相关的排到前面。
-### 1. RRF（Reciprocal Rank Fusion）
+## 1. RRF（Reciprocal Rank Fusion）
 混合检索章用它融合稀疏+密集两路结果。零样本、无需训练，纯按文档在各路结果中的排名倒数算分。
 - 思想：多路都排前的文档更重要。缺点：只认排名，丢失原始相似度分数。
 
-### 2. RankLLM / LLM-based Reranker
+## 2. RankLLM / LLM-based Reranker
 - 逻辑：既然最后是LLM生成答案，不如让LLM直接判断哪些上下文最相关。
 - 提示词：查询 + 编号文档列表（摘要），要求按相关性排序输出编号和分数（如 "Doc: 9, Relevance: 7"）。
 
-### 3. Cross-Encoder重排
+## 3. Cross-Encoder重排
 - 把查询和每篇文档拼接成一个输入（[CLS] query [SEP] doc [SEP]）送进BERT，输出单一相关分（0~1）。
 - 高精度来源：查询+文档同时分析；高延迟来源：N篇文档需要N次独立推理。
 - 常见模型：ms-marco-MiniLM-L-12-v2等。[SEP]是BERT里分隔文本片段的特殊标记。
 
-### 4. ColBERT重排
+## 4. ColBERT重排
 - 折中方案：①独立编码，查询和文档的每个Token各自生成向量（文档可预存，就可以加速查询）；②后期交互，查询时算查询每个Token与文档各Token的最大相似度MaxSim；③分数聚合，所有MaxSim求和，得到最终相关性。
 - 避免了拼接联合编码的昂贵成本，又比双编码器（只比单个[CLS]向量）捕捉到更细粒度的词汇级交互。
 
-### 5. 对比表
+## 5. 对比表
 | 特性 | RRF | RankLLM | Cross-Encoder | ColBERT |
 | 核心机制 | 融合多个排名 | LLM推理生成排序 | 拼接编码算单一分数 | 独立编码+后期交互 |
 | 计算成本 | 低 | 中（API费+延迟） | 高（N次推理） | 中（向量点积） |
@@ -925,23 +925,23 @@ Text2SQL系统本身是一个处理组件；路由负责判断这个问题该不
 目标：初检文档块含噪音，压缩后只保留与查询最直接相关的内容。
 两种方式：内容提取（抽相关句子段落）／ 文档过滤（丢弃不相关整篇）。
 
-### LangChain实现
+## LangChain实现
 - `ContextualCompressionRetriever`：包装器，套在基础检索器外，先检索、再用指定压缩器处理、最后返回。
 - 三种内置 `DocumentCompressor`：
   - `LLMChainExtractor`：LLM逐文档提取相关部分（内容提取）
   - `LLMChainFilter`：LLM判断整篇相关否，不相关整篇丢弃（文档过滤）
   - `EmbeddingsFilter`：嵌入相似度低于阈值就丢（快、省、不调LLM）
 
-### 自定义ColBERTReranker
+## 自定义ColBERTReranker
 LangChain无内置ColBERT重排器，标准探索流程：
 官方文档 → 发现需求缺口 → 分析`ContextualCompressionRetriever`用法和源码（两步：base_retriever取文档 → base_compressor处理）→ f12定位核心基类 `BaseDocumentCompressor` → 继承并实现 `compress_documents`。
 方法论：框架没现成功能时，先找核心切入点基类，再继承实现。
 基础薄弱时借助大模型写：提供`BaseDocumentCompressor`源码、`ContextualCompressionRetriever`源码及示例、明确目标、其他重排器参考代码。
 
-### 管道组装
+## 管道组装
 `DocumentCompressorPipeline(transformers=[reranker, compressor])`按顺序串处理器（先ColBERT重排，再LLM提取压缩），整体作为`ContextualCompressionRetriever`的`base_compressor`，实现"检索 → 重排 → 压缩"全自动流程。
 
-### LlamaIndex 拓展
+## LlamaIndex 拓展
 `SentenceEmbeddingOptimizer`：后处理器，把文档拆句、算每句与查询的嵌入相似度、只留最相关的句子。
 
 ## 四、校正（Corrective-RAG, C-RAG）
@@ -964,13 +964,13 @@ LangChain用langgraph的图结构实现带条件判断和循环的复杂流程�
 ## 六、结果分析：输出重复
 ### 现象
 07运行后final[1]（失语症段）开头与final[3]（总起段）结尾是同一句话："一个比较明显的问题是，AI生成内容虽然已非常流畅……"。
-### 我的假设
+## 我的假设
 重复就是来源于，相邻块受overlap的影响，虽然切分上不会重复，但是overlap会导致有重复的内容被送进LLM，然后LLM在内容提取的时候也是独立的，不知道前面的chunk已经提取了这部分内容。这样一来就导致重复了。
-### 我的修法：07b_rerank_dedup.py
+## 我的修法：07b_rerank_dedup.py
 管道末端加句子级去重压缩器（纠错在下游）：`transformers=[reranker, compressor, DedupCompressor()]`。验证：重复句被精确删除。
 ### 作者的修法：work_rerank_and_refine.py
 改切分（防错在源头）：`separators=["\n\n","\n","。","！","？","；","，"," ",""]`、`chunk_size=300`、`chunk_overlap=20`。验证：重复消失，且基础检索第一名从谷歌新闻变成最相关的失语症段（完整句子块嵌入质量更高）。
-### 三方对照
+## 三方对照
 | | 07 原版 | 07b我的修法 | work作者修法 |
 | 思路 | — | 纠错在下游 | 防错在源头 |
 | 重复 | 有 | 精确删除 | 消失 |
@@ -1008,3 +1008,55 @@ RRF零成本只认排名、不看内容；Cross-Encoder深度理解语义但要N
 5. C-RAG的评估环节为什么能减少幻觉？
 检索失败时不再硬着头皮用错文档生成，而是改写查询/Web搜索补救。
 
+
+## 2026-11-03 C5 第一节 格式化生成
+## 一、本节目的
+LLM默认输出自由文本，但下游程序需要结构化数据（前端渲染JSON、拼API请求、入库）。
+格式化生成就是连接LLM自然语言理解与下游程序逻辑的桥梁。
+典型场景：电商客服返回商品JSON列表、自然语言转API调用、新闻关键信息自动提取。
+
+## 二、LangChain Output Parsers
+三种内置解析器：StrOutputParser（前面已经出现过）、JsonOutputParser（解析嵌套JSON）、
+PydanticOutputParser（最严格：与Pydantic模型结合，强定义+强验证）。
+
+## PydanticOutputParser四步工作原理
+1.定义数据模型：`class PersonInfo(BaseModel)` + `Field(description=...)`。
+   这不是普通类，是Schema；description描述会直接成为给LLM的指令，表述必须清晰。
+2.生成格式指令：`parser.get_format_instructions()`内部调`.model_json_schema()`提取JSON Schema，简化后嵌入指导性模板，要求LLM输出符合Schema的JSON。{format_instructions}：创建模板时调用parser.get_format_instructions()当场生成指令文字并封存，也就是说这里的()类似于一个按钮，每次有text进来，这个按钮就启动，然后就有了一个标准的格式format_instructions，然后再把这个format_instructions和text一起打包送给LLM处理，就可以返回schema了。
+3. LCEL建链：`chain = prompt | llm | parser`；prompt用partial_variables注入format_instructions。
+4. 两步解析：①继承自JsonOutputParser，字符串 → 字典；
+   ②`PersonInfo.model_validate()`用数据模型强验证（字段/类型不符即抛 OutputParserException）。返回的不是字典，而是PersonInfo实例对象。
+
+## 三、LlamaIndex方案
+- Response Synthesizer（响应合成器）：检索结果不简单拼接，而是有refine模式（逐块迭代优化答案）和compact模式（尽量压进单次调用）。默认产出高质量文本。
+- Pydantic Programs（结构化输出）：与PydanticOutputParser同思想；底层模型支持Function Calling则优先使用，否则回退到JSON Schema注入提示词；输出自动解析验证为Pydantic实例。
+
+## 四、不依赖框架的实现
+1. 强硬要求："必须返回JSON，不要任何解释性文字"。
+2. 提示词中给出JSON Schema（每个键的含义和类型）。
+3. few-shot示例（1-2个"输入→期望 JSON"完整对照）。
+4. GBNF语法约束（本地模型如llama.cpp）：强制每个token符合JSON语法，这是非Function Calling下最严格可靠的方法。
+
+## 五、Function Calling
+## 六步工作流
+①代码定义工具（代码中以特定格式，通常是JSON Schema：name/description/parameters去定义好可用的工具，描述质量决定模型选得对不对）
+②用户提问
+③模型决策：不直接回答，返回tool_calls指令（类似于调用XX工具，参数是XXX）
+④代码实际执行工具（调用真实API/数据库） 
+⑤结果包成`{"role": "tool", "tool_call_id": ..., "content": ...}`发回给模型 
+⑥模型结合工具结果生成最终自然语言回答。
+## 三大优势
+1. 可靠性更高：模型原生能力，结构化输出更稳定精确。
+2. 意图识别：模型主动选择最合适的工具（不只格式化）。
+3. Agent核心基础：LLM查询数据库、调用API、控制设备的底座。
+每个Agent，无论多复杂，底层都是这个循环的重复
+
+## 六、一些思考
+1. PydanticOutputParser 为什么需要两步解析？
+第一步字符串，字典只是读出来，字段名/类型对不对不知道；第二步model_validate强验证，不合Schema直接抛异常，杜绝脏数据流入下游。
+2. Function Calling和提示工程要JSON的本质区别？
+前者是模型原生能力：模型自己判断要不要调工具、调哪个、参数是什么（意图识别+行动选择）；后者只是请求输出某种格式，没有决策能力。
+3. Field(description=...) 有什么用？
+description描述会成为格式指令的一部分喂给LLM，也就是description即提示词，不仅仅是给程序员看的，也是给LLM看的。
+4. 什么时候用Function Calling而不是 PydanticOutputParser？
+需要模型自主决定调用哪个工具、与外部世界交互时；单纯结构化输出两者皆可Function Calling更可靠但依赖模型支持。
