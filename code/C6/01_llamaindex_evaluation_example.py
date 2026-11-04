@@ -1,4 +1,5 @@
 import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 import asyncio
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
 from llama_index.core.node_parser import SentenceWindowNodeParser, SentenceSplitter
@@ -66,7 +67,9 @@ async def main():
     # 4. 执行响应评估对比
     print("开始执行响应评估对比...")
     evaluators = {"faithfulness": faithfulness_evaluator, "relevancy": relevancy_evaluator}
-    queries = response_eval_dataset.queries
+    # 修复：.queries 是字典（UUID→问题），BatchEvalRunner 会遍历出键（UUID）当问题——必须取问题文本列表
+    # 另：第0条是 DatasetGenerator 前言泄漏的垃圾题（"Here are 10 diverse questions..."），过滤掉
+    queries = [q for q in response_eval_dataset.questions if not q.startswith("Here are")]
 
     # 句子窗口检索响应评估
     print("\n=== 评估句子窗口检索 ===")
