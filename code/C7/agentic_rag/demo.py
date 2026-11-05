@@ -19,13 +19,14 @@ Agentic RAG 完整演示脚本
 import sys
 import os
 import json
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 # 添加当前目录到路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from langchain_openai import ChatOpenAI
 from agent import AgenticRAG
-from tools import VectorSearchTool, web_search_tool, build_knowledge_base
+from tools import make_vector_search_tool, web_search_tool, build_knowledge_base
 
 
 # ============================================================
@@ -167,12 +168,18 @@ def main():
     print("\n📦 初始化组件...")
 
     # 检查API密钥
-    if not os.environ.get("OPENAI_API_KEY"):
-        print("❌ 请设置 OPENAI_API_KEY 环境变量")
-        print("   export OPENAI_API_KEY='sk-...'")
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        print("❌ 请设置 DEEPSEEK_API_KEY 环境变量")
+        print("   export DEEPSEEK_API_KEY='sk-...'")
         sys.exit(1)
 
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    # 适配：DeepSeek 兼容 OpenAI 协议，改 base_url + model 即可
+    llm = ChatOpenAI(
+        model="deepseek-chat",
+        temperature=0,
+        api_key=os.environ.get("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com",
+    )
 
     # 构建知识库
     print("  构建向量知识库...")
@@ -182,8 +189,8 @@ def main():
     )
 
     # 创建工具
-    vs_tool_instance = VectorSearchTool(vectorstore)
-    tools = [vs_tool_instance.search]
+    vs_tool = make_vector_search_tool(vectorstore)
+    tools = [vs_tool]
 
     # 如果有Tavily API密钥，添加web搜索
     has_web_search = bool(os.environ.get("TAVILY_API_KEY"))

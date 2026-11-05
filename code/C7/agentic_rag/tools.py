@@ -11,29 +11,29 @@ Agentic RAG 工具集
 from typing import List, Optional
 from langchain.tools import tool
 from langchain_community.vectorstores import Chroma
-from langchain_community.tools.tavily_search import TavilySearchResults
+# 修复：TavilySearchResults 在 import 时就强制要求 TAVILY_API_KEY，没有 key 整个程序起不来——
+# 作者的"可选"是假的（创建动作发生在 import 阶段）。我们没有 key，注释掉，web_search_tool 留 None 占位。
+# from langchain_community.tools.tavily_search import TavilySearchResults
 
 
 # ============================================================
 # 工具1：向量数据库检索
 # ============================================================
-class VectorSearchTool:
+def make_vector_search_tool(vectorstore: Chroma):
     """
-    封装向量数据库检索为Agent可调用的工具。
+    把向量数据库检索封装成 Agent 可调用的工具。
 
-    设计要点：
-    1. tool description 必须清晰说明适用/不适用场景
-    2. 返回结果包含相关性分数，供Agent评估时参考
-    3. 支持自定义返回数量k
+    修复说明（原版的两个 bug）：
+    1. 作者原版用 @tool 装饰"类的方法"——工具名取函数名 "search"，
+       而 analyze_query 提示词告诉 LLM 的可选工具是 "vector_search"，
+       名字对不上 → _retrieve 查无此工具 → 检索永远被静默跳过。
+       这里改为"闭包函数"并用 @tool("vector_search") 显式命名，与提示词对齐。
+    2. 闭包捕获 vectorstore（相当于原 self），函数签名干净 (query, k)，
+       顺便避开了 @tool 装饰方法时 self 不绑定的隐患。
     """
-
-    def __init__(self, vectorstore: Chroma):
-        self.vectorstore = vectorstore
-
-    @tool
-    def search(self, query: str, k: int = 5) -> str:
-        """
-        在本地向量知识库中检索与查询语义相关的文档。
+    @tool("vector_search")
+    def vector_search(query: str, k: int = 5) -> str:
+        """在本地向量知识库中检索与查询语义相关的文档。
 
         适用场景：
         - 查询需要从知识库中获取特定事实或概念
@@ -51,7 +51,7 @@ class VectorSearchTool:
         Returns:
             格式化的检索结果，包含文档内容和相关性分数
         """
-        docs = self.vectorstore.similarity_search_with_score(query, k=k)
+        docs = vectorstore.similarity_search_with_score(query, k=k)
         if not docs:
             return "[vector_search 结果] 未找到相关文档。建议尝试：1) 使用同义词改写查询 2) 减少限定条件 3) 改用 web_search 工具"
 
@@ -66,21 +66,26 @@ class VectorSearchTool:
             )
         return "\n\n".join(results)
 
+    return vector_search
+
 
 # ============================================================
 # 工具2：Web搜索
 # ============================================================
-web_search_tool = TavilySearchResults(
-    max_results=3,
-    search_depth="advanced",
-    include_answer=True,
-    description=(
-        "在互联网上搜索实时信息。"
-        "适用场景：需要最新新闻、实时数据、近期事件时使用。"
-        "不适用于查询本地知识库中已有的内容。"
-        "输入应为简洁的搜索关键词或短语。"
-    ),
-)
+# 修复：无 TAVILY_API_KEY，禁用。demo.py 里 has_web_search 判断会为 False，不会加入工具列表。
+# 原代码在 import 时无条件创建 TavilySearchResults → 无 key 直接 ValidationError 崩溃。
+web_search_tool = None
+# web_search_tool = TavilySearchResults(
+#     max_results=3,
+#     search_depth="advanced",
+#     include_answer=True,
+#     description=(
+#         "在互联网上搜索实时信息。"
+#         "适用场景：需要最新新闻、实时数据、近期事件时使用。"
+#         "不适用于查询本地知识库中已有的内容。"
+#         "输入应为简洁的搜索关键词或短语。"
+#     ),
+# )
 
 
 # ============================================================
@@ -88,7 +93,7 @@ web_search_tool = TavilySearchResults(
 # ============================================================
 def build_knowledge_base(
     documents: List[str],
-    embedding_model_name: str = "text-embedding-3-small",
+    embedding_model_name: str = "BAAI/bge-small-en",
     collection_name: str = "agentic_rag_demo",
     persist_directory: Optional[str] = None,
     chunk_size: int = 300,
@@ -108,7 +113,7 @@ def build_knowledge_base(
     Returns:
         Chroma 向量存储实例
     """
-    from langchain_openai import OpenAIEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings
     from langchain.text_splitter import RecursiveCharacterTextSplitter
     from langchain_core.documents import Document
 
@@ -121,7 +126,7 @@ def build_knowledge_base(
     docs = [Document(page_content=text) for text in documents]
     chunks = text_splitter.split_documents(docs)
 
-    embeddings = OpenAIEmbeddings(model=embedding_model_name)
+    embeddings = HuggingFaceEmbeddings(model_name=embedding_model_name)
 
     vectorstore = Chroma.from_documents(
         documents=chunks,

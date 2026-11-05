@@ -127,13 +127,16 @@ class AgenticRAG:
         workflow.add_edge("retrieve", "critique")
 
         # 条件边：根据评估结果决定下一步
+        # 修复：原版把 max_iter 映射到 END → final_answer 保持空字符串，答案为空。
+        # 文档 5.2 说"达到最大轮次→强制生成"，_generate 里也有 is_forced 逻辑，
+        # 但原路由根本没走到 generate——死代码。这里改为改道 generate，让强制生成生效。
         workflow.add_conditional_edges(
             "critique",
             self._should_continue,
             {
                 "refine": "refine_query",
                 "generate": "generate",
-                "max_iter": END,
+                "max_iter": "generate",
             },
         )
 
@@ -325,14 +328,17 @@ class AgenticRAG:
         try:
             critique = json.loads(content)
         except json.JSONDecodeError:
+            # 修复：原版解析失败"默认认为信息充分"——静默失败（C6教训：解析失败不报错、
+            # 直接判够用跳去生成，比报错更可怕）。改为"默认不充分"→走refine重试，
+            # 最多多花一轮，但不会带着垃圾生成。
             if self.verbose:
-                print(f"  ⚠️ JSON解析失败，默认认为信息充分。原始回复: {content[:200]}")
+                print(f"  ⚠️ JSON解析失败，默认认为信息不充分（保守策略）。原始回复: {content[:200]}")
             critique = {
-                "is_sufficient": True,
-                "relevance_score": 7,
-                "sufficiency_score": 7,
+                "is_sufficient": False,
+                "relevance_score": 0,
+                "sufficiency_score": 0,
                 "missing_aspects": [],
-                "failure_reason": "",
+                "failure_reason": "评估结果解析失败，保守起见认为信息不充分",
                 "suggested_rewrite": "",
             }
 
